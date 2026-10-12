@@ -1,0 +1,308 @@
+---
+title: "Student Performance Analysis"
+author: "SwimmingBird"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+Analysis based on synthetic data set.
+
+Source: <https://www.kaggle.com/datasets/jayaantanaath/student-habits-vs-academic-performance>
+
+```{r}
+require(tidyverse)
+require(skimr)
+require(ggthemes)
+require(corrplot)
+filter <- dplyr::filter
+df <- read_csv("student_habits_performance.csv", show_col_types = F)
+```
+
+Dataset is clean and well organized, no prep required.
+
+Dataset lends itself well to exploratory and regression analysis.
+
+The main outcome variable is exam score, accompanied by a variety of student attribute and behaviour variables.
+
+First, basic check for variation in categorical variables.
+
+```{r}
+df_colnames <- colnames(df)
+character_cols <- df_colnames[sapply(df, is.character)]
+
+df_long_character <- df %>%
+  pivot_longer(character_cols[-1], names_to = "variable", values_to = "category")
+facet_character_labels <- c(
+  diet_quality = "Diet Quality",
+  extracurricular_participation = "Extracurricualar Participation",
+  gender = "Gender",
+  internet_quality = "Internet Quality",
+  parental_education_level = "Parental Education",
+  part_time_job = "Part Time Job"
+)
+
+require(colorspace)
+
+ggplot(df_long_character, aes(x = category, fill=category)) +
+  geom_bar(color = "black") + 
+  facet_wrap(~ variable, scales = "free_x", labeller = labeller(variable = facet_character_labels)) + 
+  guides(fill="none") + 
+  labs(x=NULL,y=NULL) + 
+  theme(axis.text.x = element_text(
+    angle = 45,
+    hjust = 1
+  )) +
+  scale_fill_discrete_qualitative(palette = "Set2")
+```
+
+Next, basic check for variation in numeric variables.
+
+```{r}
+numeric_cols <- df_colnames[sapply(df, is.numeric)]
+
+df_long_numeric <- df %>%
+  pivot_longer(numeric_cols, names_to = "variable", values_to = "value")
+facet_numeric_labels <- c(
+  age = "Age",
+  study_hours_per_day = "Study Hours Per Day",
+  social_media_hours = "Social Media Hours",
+  netflix_hours = "Netflix Hours",
+  attendance_percentage = "Attendance Percentage",
+  sleep_hours = "Sleep Hours",
+  exercise_frequency = "Exercise Frequency",
+  mental_health_rating = "Mental Health Rating",
+  exam_score = "Exam Score"
+) 
+
+ggplot(df_long_numeric, aes(x = value, fill=variable)) +
+  geom_histogram(color = "black", bins = 10) + 
+  facet_wrap(~ variable, scales = "free_x", labeller = labeller(variable = facet_numeric_labels)) +
+  labs(x=NULL, y=NULL) +
+  guides(fill="none") +
+  scale_fill_discrete_qualitative(palette = "Set2")
+
+```
+
+Pearson's Correlation plot
+
+```{r}
+
+corrplot(
+  df %>% select(where(is.numeric)) %>% select(sort(names(.))) %>% relocate(exam_score) %>% cor,
+  type = "upper",
+  diag = F,
+  tl.col = "black",
+  tl.srt = 45
+)
+```
+
+Distance correlation plot
+
+```{r}
+require(dcortools)
+
+corrplot(
+  (df %>% select(where(is.numeric)) %>% select(sort(names(.))) %>% relocate(exam_score) %>% as.data.frame() %>% dcmatrix)$dcor,
+  type = "upper",
+  diag = F,
+  tl.col = "black",
+  tl.srt = 45
+)
+```
+
+Evidently, the dataset is very convenient. There is minimal regression between all "input" numeric variables i.e. all numeric variables less exam scores. This lends well to additive model specification. 
+
+The synthetic nature of the dataset is evident for in a realistic setting significant attention would be paid to the joint distribution of behavioural markers like exercise frequency, mental health rating, sleep hours and social media hours and then their effect on study hours per day. As a check we can inspect visually. 
+
+```{r fig.width=10, fig.height=20}
+require(lattice)
+
+#| fig-width: 10
+#| fig-height: 20
+
+
+cloud(
+  mental_health_rating ~ social_media_hours + sleep_hours |
+    factor(
+      exercise_frequency,
+      labels = c("zero", "one", "two", "three", "four", "five", "six")
+    ),
+  data = df,
+  as.table = TRUE,
+
+  scales = list(
+    arrows = FALSE,
+    x = list(cex = 1),
+    y = list(cex = 1),
+    z = list(cex = 1)
+  ),
+
+  xlab = list("Social media hours", cex =  1.2, rot= 33),
+  ylab = list("Sleep hours", cex =  1.2, rot = - 40),
+  zlab = list("Mental health rating", cex = 1.2, rot=90),
+  layout = c(2,4)
+)
+```
+Plots showcase an apparent lack of shape in bahaviour marker variables, and importantly the cloud shapes are similar given different levels of exercise frequency.
+[The plots are conditioned by exercise frequency, which is an integer in {0,1,2,3,4,5,6}, which lends itself nicely to conditioning as if it was a factor variable]
+
+Fitting GAM.
+
+```{r}
+require(mgcv)
+
+gam_formula <- reformulate(
+  c(character_cols[-1],paste0("s(",numeric_cols[!numeric_cols=="exam_score"],", bs='cr', k = 7)")),
+  response = "exam_score"
+)
+
+gam_fit <- gam(gam_formula, data = df) 
+```
+```{r}
+summary(gam_fit)
+```
+```{r fig.width = 9, fig.height = 9}
+plot(gam_fit, pages= 2)
+```
+The imediate take aways are:
+- numeric regressors are highly statistically and practically significant
+- categorical regressors are statistically insignificant and practically not significant.
+
+It is clear the greatest predictor in practical terms is study hours per day for the model finds increase from median to upper percentile study hours to be associated with a 30 mark exam score increase, similarly a 30 mark decrease for a change from median to lower percentile study hours.
+Rest of numerical behavioral markers are much more modest in their "effect" (in quotations since this is not causal effect), most showing a 5-10 mark sway from median to upper percentile.
+Importantly, netflix hours and social media hours have an asymmetric "effect" around respective medians, where the positive "effect" on exam scores of reducing their duration extends further, wheres the negative "effect" plateaus quite quickly.
+
+Categorical variables are much less practically significant, mostly attributing to no more than a single mark on exam scores. Their statistical insignificance should not be of interest since that would require presumption of normality or establishing that errors are distributed similarly enough to Gaussian distribution. (test to follow)
+
+For the purpose of reducing the number of model dimensions, we can reduce the set of regressors down to the practically significant numerical variables, fit new gam and employ cross validation to see if the additional variables help predict exam scores any better.
+
+```{r}
+require(rsample)
+```
+```{r} 
+gam_formula_trimmed <- reformulate(
+  paste0("s(",numeric_cols[!numeric_cols=="exam_score" & !numeric_cols=="age"],", bs='cr', k=7)"),
+  response = "exam_score"
+)
+gam_fit_trimmed <- gam(
+  gam_formula_trimmed, data = df
+)
+```
+```{r}
+summary(gam_fit_trimmed)
+```
+Immediately we can notice how the larger and trimmed models both explain about 91% of defiance, i.e. both fit the training data about equally well. We can stop here since we don't expect overfitting to be an issue with one but not the other, nevertheles let's proceed with cross validation.
+
+Here is a good moment for a digression. As evident from plotting predicted values against observed values, the model tends to overpredict when observed value is around top percentiles.
+
+```{r}
+ggplot(
+  data = data.frame(
+    exam_score=df$exam_score,predicted_value = gam_fit_trimmed$fitted.values)
+  ) +
+  geom_point(
+    aes(
+      exam_score,predicted_value,
+      color = if_else(
+        predicted_value>100| predicted_value < 0,"outside of range","within range"),
+      ),
+    alpha = .4
+    ) +
+  geom_hline(yintercept = 100, linetype = 2) +
+  scale_color_manual(values = c(
+    "outside of range" = "red",
+    "within range" = "black")
+    ) +
+  labs(
+    x = "observed Exam Score",
+    y = "predicted Exam Score",
+    color = "predicted value is"
+  )
+```
+
+The simple fix we propose is to manually cap the predicted values.
+```{r}
+cap_values_vectorized <- function(v) {
+  v <- pmin(v,100)
+  v <- pmax(0,v)
+  return(v)
+}
+```
+```{r}
+gam_fit_trimmed_fitted_values_capped <- cap_values_vectorized(gam_fit_trimmed$fitted.values)
+```
+Now we can plot adjusted residuals against trimmed model fitted values.
+```{r}
+ggplot(data=data.frame(
+  fitted_values = gam_fit_trimmed_fitted_values_capped,
+  adjusted_residuals = gam_fit_trimmed_fitted_values_capped - gam_fit_trimmed$y
+)) +
+  geom_point(aes(fitted_values,adjusted_residuals), alpha = .5) +
+  labs(
+    x = "capped fitted value",
+    y = "residual"
+  )
+```
+And then test for normality via Jarque-Berra test:
+```{r}
+require(tseries)
+jarque.bera.test(gam_fit_trimmed_fitted_values_capped - gam_fit_trimmed$y) %>% print()
+```
+Data is synthetic, so the evidence suggests it really is Gaussian noise.
+
+No to decide if the smaller model predicts as well as the larger use cross validation.
+
+```{r}
+generate_kfold_cv_score_gam <- function(formula,data,n=10) {
+  folds <- vfold_cv(data,v=n)
+  folds_mse <- list()
+  for (i in seq(1,n)) {
+    model_fit <- gam(formula,data = folds$splits[[i]] %>% analysis())
+    model_predicts <- predict(model_fit, newdata = folds$splits[[i]] %>% assessment())
+    model_predicts <- cap_values_vectorized(model_predicts)
+    resids <- (folds$splits[[i]] %>% assessment())$exam_score - model_predicts
+    folds_mse[[i]] = sum(resids^2)
+  }
+  cv_score <- (folds_mse %>% as.numeric() %>% sum()) / nrow(data)
+  return(cv_score)
+}
+
+```
+```{r}
+print(paste("K-fold cross validation score under full gam specification is", generate_kfold_cv_score_gam(gam_formula,df)%>%signif(3), "."))
+```
+```{r}
+print(paste("K-fold cross validation score under smaller gam specification is", generate_kfold_cv_score_gam(gam_formula_trimmed,df)%>%signif(3), "."))
+```
+```{r}
+generate_gam_loocv_score <- function(formula,data) {
+  folds <- loo_cv(data)
+  resids <- list()
+  for (i in seq(1,nrow(data))) {
+    model_fit <- gam(formula, data = folds$splits[[i]] %>% analysis())
+    model_predicts <- predict(model_fit, newdata = folds$splits[[i]] %>% assessment())
+    model_predicts <- cap_values_vectorized(model_predicts)
+    resids[[i]] <- (folds$splits[[i]] %>% assessment())$exam_score - model_predicts
+  }
+  resids <- resids %>% as.numeric()
+  cv_score <- resids^2 %>% mean
+  return(cv_score)
+}
+```
+```{r}
+loocv_full_spec <- generate_gam_loocv_score(gam_formula, df)
+```
+
+```{r}
+loocv_trimmed_spec <- generate_gam_loocv_score(gam_formula_trimmed, df)
+```
+```{r}
+print(paste("Leave-one-out cross validation score under full gam specification is", loocv_full_spec %>% signif(3), "."))
+print(paste("Leave-one-out cross validation score under smaller gam specification is", loocv_trimmed_spec %>% signif(3), "."))
+```
+The smaller gam specification does as well as the full spec regression. This is very encouraging.
+
+Now, it remains to generate the confidence intervals via bootstrap.  
